@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import re
 
 class CryptoCompareClient:
     """Cliente para interagir com a API do CryptoCompare."""
@@ -132,7 +133,8 @@ class CryptoCompareClient:
         tsym: str = "USD", 
         limit: int = 30, 
         aggregate: int = 1,
-        interval: str = "day"
+        interval: str = "day",
+        timeframe: str = None
     ) -> List[Dict[str, Any]]:
         """
         Obtém dados históricos para um símbolo de criptomoeda.
@@ -143,10 +145,32 @@ class CryptoCompareClient:
             limit: Número de pontos de dados (max 2000).
             aggregate: Número de unidades a agregar.
             interval: Intervalo de tempo ("minute", "hour", "day").
+            timeframe: Formato alternativo de timeframe (ex: "1d", "4h", "15m").
+                      Se fornecido, sobrescreve interval e aggregate.
             
         Returns:
             Lista de pontos de dados históricos.
         """
+        # Converter timeframe para interval/aggregate se fornecido
+        if timeframe:
+            # Extrair número e unidade (ex: "4h" -> 4, "h")
+            match = re.match(r"(\d+)([mhd])", timeframe.lower())
+            if match:
+                amount, unit = match.groups()
+                amount = int(amount)
+                
+                # Mapear unidade para interval
+                unit_map = {
+                    "m": "minute",
+                    "h": "hour",
+                    "d": "day"
+                }
+                
+                interval = unit_map.get(unit, "day")
+                aggregate = amount
+            else:
+                logger.warning(f"Formato de timeframe não reconhecido: {timeframe}. Usando padrões.")
+        
         # Mapear intervalo para endpoint
         endpoint_map = {
             "minute": "histominute",

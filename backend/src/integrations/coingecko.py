@@ -556,6 +556,68 @@ class CoinGeckoClient:
         except Exception as e:
             logger.error(f"Erro ao obter resumo do mercado: {str(e)}")
             return {"error": str(e)}
+    
+    async def get_token_history(self, symbol: str, days: int = 100) -> List[Dict[str, Any]]:
+        """
+        Obtém dados históricos de preço para um token específico.
+        
+        Args:
+            symbol: Símbolo do token (ex: BTC)
+            days: Número de dias de histórico (default: 100)
+            
+        Returns:
+            Lista de pontos de dados históricos formatados para compatibilidade
+        """
+        try:
+            # Primeiro precisamos converter o símbolo para o ID do CoinGecko
+            coins = await self.search_coins(symbol)
+            
+            if not coins:
+                logger.warning(f"Token {symbol} não encontrado no CoinGecko")
+                return []
+                
+            # Pegar o primeiro resultado da busca
+            coin_id = coins[0]['id']
+            
+            # Obter dados históricos
+            market_data = await self.get_coin_market_chart(
+                coin_id=coin_id,
+                vs_currency="usd",
+                days=days
+            )
+            
+            if not market_data or "prices" not in market_data:
+                logger.warning(f"Dados históricos não disponíveis para {symbol}")
+                return []
+                
+            # Converter para o formato esperado pelo technical_agent
+            result = []
+            for i, (timestamp, price) in enumerate(market_data.get("prices", [])):
+                # Timestamp está em milissegundos
+                dt = datetime.fromtimestamp(timestamp / 1000)
+                
+                # Pegar volumes do mesmo período
+                volume = 0
+                if i < len(market_data.get("total_volumes", [])):
+                    _, volume = market_data["total_volumes"][i]
+                
+                entry = {
+                    "timestamp": dt,
+                    "prices": price,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": volume,
+                    "total_volumes": volume
+                }
+                result.append(entry)
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter histórico para {symbol}: {str(e)}")
+            return []
 
 # Importação obrigatória para o delay entre requisições
 import asyncio

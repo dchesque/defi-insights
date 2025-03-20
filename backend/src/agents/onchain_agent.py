@@ -6,7 +6,7 @@ import datetime
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
-from ..agents.base_agent import BaseAgent
+from ..core.base_agent import BaseAgent
 from ..integrations.blockchain_explorer import blockchain_explorer_client
 from ..integrations.coingecko import coingecko_client
 

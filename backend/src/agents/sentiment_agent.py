@@ -11,7 +11,7 @@ import re
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
-from ..agents.base_agent import BaseAgent
+from ..core.base_agent import BaseAgent
 from ..integrations.telegram import TelegramClient
 from ..integrations.anthropic import anthropic_client
 from ..utils.cache import Cache

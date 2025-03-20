@@ -4,8 +4,10 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
 import os
+import secrets
 from dotenv import load_dotenv
 from src.integrations.supabase import supabase
+from loguru import logger
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -14,7 +16,19 @@ load_dotenv()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/token")
 
 # Configurações do JWT
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "seu_secret_key_aqui")  # Usar a variável de ambiente
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    # Se a chave não estiver definida no ambiente, gerar erro em produção
+    # ou criar uma temporária em desenvolvimento
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        logger.critical("JWT_SECRET_KEY não está definida no ambiente de produção!")
+        raise ValueError("JWT_SECRET_KEY precisa ser definida no ambiente de produção")
+    else:
+        # Em desenvolvimento, gerar uma chave temporária, mas alertar
+        SECRET_KEY = secrets.token_hex(32)
+        logger.warning("JWT_SECRET_KEY não definida! Usando uma chave temporária para desenvolvimento.")
+        logger.warning("NÃO use isto em produção!")
+
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
