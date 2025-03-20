@@ -1,0 +1,20 @@
+{
+  "name": "defi-insight",
+  "version": "1.0.0",
+  "description": "Plataforma de análise avançada de tokens cripto utilizando inteligência artificial.",
+  "scripts": {
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "cd frontend && npm run start",
+    "setup": "npm install && cd frontend && npm install && cd ../backend && npm install"
+  },
+  "keywords": [
+    "defi",
+    "crypto",
+    "blockchain",
+    "analysis",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT"
+}
