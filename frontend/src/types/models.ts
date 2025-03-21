@@ -175,3 +175,33 @@ export interface User {
     created_at: string;
     updated_at: string;
   }
+
+  export interface ApiErrorResponse {
+    success: false;
+    message: string;
+    timestamp: string;
+    request_id: string;
+    error_code?: string;
+    details?: any;
+    path?: string;
+  }
+
+  export interface ApiResponse<T> {
+    success: boolean;
+    message: string;
+    data: T;
+    timestamp: string;
+    request_id: string;
+    metadata?: any;
+  }
+  
+  export interface PaginatedResponse<T> extends ApiResponse<T[]> {
+    pagination: {
+      page: number;
+      page_size: number;
+      total_items: number;
+      total_pages: number;
+      has_next: boolean;
+      has_previous: boolean;
+    };
+  }

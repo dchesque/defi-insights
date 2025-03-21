@@ -1,4 +1,3 @@
-// frontend/src/pages/HomePage.js - Atualizado em 21/03/2025 16:10
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import CryptoForm from '../components/CryptoForm';

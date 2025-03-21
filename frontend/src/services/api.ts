@@ -1,42 +1,12 @@
-// frontend/src/services/api.ts - Criado em 21/03/2025 14:35
+// frontend/src/services/api.ts - Atualizado em 21/03/2025 14:35
 /**
  * Serviço para comunicação com a API do backend.
  * Centraliza todas as chamadas HTTP e gerencia autenticação e erros.
  */
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
+import { ApiErrorResponse, ApiResponse, PaginatedResponse } from '../types/models';
 
-// Tipos de respostas da API
-export interface ApiResponse<T> {
-  success: boolean;
-  message: string;
-  data: T;
-  timestamp: string;
-  request_id: string;
-  metadata?: any;
-}
-
-export interface ApiErrorResponse {
-  success: false;
-  message: string;
-  timestamp: string;
-  request_id: string;
-  error_code?: string;
-  details?: any;
-  path?: string;
-}
-
-export interface PaginatedResponse<T> extends ApiResponse<T[]> {
-  pagination: {
-    page: number;
-    page_size: number;
-    total_items: number;
-    total_pages: number;
-    has_next: boolean;
-    has_previous: boolean;
-  };
-}
-
-class ApiService {
+export class ApiService {
   private api: AxiosInstance;
   private isRefreshing: boolean = false;
   private refreshPromise: Promise<string> | null = null;
@@ -44,7 +14,7 @@ class ApiService {
   constructor() {
     // Criar instância do axios com configurações padrão
     this.api = axios.create({
-      baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+      baseURL: process.env.REACT_APP_API_URL || 'http://localhost:8000',
       headers: {
         'Content-Type': 'application/json',
       },
@@ -75,10 +45,9 @@ class ApiService {
             try {
               // Aguardar token de refreshing em andamento
               const newToken = await this.refreshPromise;
-              originalRequest.headers = {
-                ...originalRequest.headers,
-                Authorization: `Bearer ${newToken}`
-              };
+              if (originalRequest.headers) {
+                originalRequest.headers.Authorization = `Bearer ${newToken}`;
+              }
               return this.api(originalRequest);
             } catch (refreshError) {
               // Se refresh falhar, direcionar para login
@@ -110,12 +79,16 @@ class ApiService {
         }
         
         // Formatar erros
-        const errorResponse: ApiErrorResponse = error.response?.data || {
+        const errorResponse: ApiErrorResponse = {
           success: false,
-          message: error.message || 'Erro desconhecido',
+          message: error.response?.data 
+            ? (error.response.data as any).message || 'Erro desconhecido'
+            : error.message || 'Erro desconhecido',
           timestamp: new Date().toISOString(),
-          request_id: 'client-error',
-          path: originalRequest.url
+          request_id: (error.response?.data as any)?.request_id || 'client-error',
+          path: error.config?.url,
+          error_code: (error.response?.data as any)?.error_code,
+          details: (error.response?.data as any)?.details
         };
         
         return Promise.reject(errorResponse);

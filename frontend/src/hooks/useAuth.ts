@@ -4,7 +4,7 @@
  * Encapsula a lógica de login, registro e logout.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/router';
+import { useNavigate } from 'react-router-dom'; // Importação correta
 import { apiService } from '../services/api';
 import { User, AuthToken } from '../types/models';
 
@@ -22,7 +22,7 @@ export function useAuth() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const router = useRouter();
+  const navigate = useNavigate(); // Usar useNavigate do React Router
 
   // Verificar se o usuário está autenticado ao carregar a página
   useEffect(() => {
@@ -117,8 +117,8 @@ export function useAuth() {
     localStorage.removeItem('refresh_token');
     setUser(null);
     setIsAuthenticated(false);
-    router.push('/login');
-  }, [router]);
+    navigate('/login'); // Substituir router.push
+  }, [navigate]);
 
   return {
     user,
