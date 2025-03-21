@@ -1,3 +1,4 @@
+# backend/src/utils/config.py - Atualizado em 21/03/2025 14:20
 """
 Gerenciador de configurações da aplicação.
 """
@@ -15,6 +16,11 @@ class Settings(BaseSettings):
     API_HOST: str = Field("0.0.0.0", env="API_HOST")
     API_PORT: int = Field(8000, env="API_PORT")
     DEBUG: bool = Field(False, env="DEBUG")
+    ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
+    
+    # Frontend Settings
+    FRONTEND_URL: str = Field("http://localhost:3000", env="FRONTEND_URL")
+    CORS_ORIGINS: str = Field("http://localhost:3000,http://localhost:8080", env="CORS_ORIGINS")
     
     # Authentication Settings
     SECRET_KEY: str = Field("your-super-secret-key-for-jwt", env="SECRET_KEY")
@@ -64,6 +70,13 @@ class Settings(BaseSettings):
     CACHE_TTL: int | None = Field(None, env="CACHE_TTL")
     LOG_FORMAT: str | None = Field(None, env="LOG_FORMAT")
     
+    @property
+    def get_cors_origins(self) -> list:
+        """Converte a string de origens CORS em uma lista"""
+        if not self.CORS_ORIGINS:
+            return [self.FRONTEND_URL]
+        return self.CORS_ORIGINS.split(",")
+    
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -80,4 +93,4 @@ def get_settings() -> Settings:
     Returns:
         Settings: Configurações da aplicação
     """
-    return Settings() 
+    return Settings()

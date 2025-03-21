@@ -1,3 +1,4 @@
+# backend/src/main.py - Atualizado em 21/03/2025 14:25
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -26,6 +27,10 @@ try:
 except Exception as e:
     logger.error(f"Erro ao carregar variáveis de ambiente: {str(e)}")
 
+# Importar configurações
+from src.utils.config import get_settings
+settings = get_settings()
+
 # Criar aplicação FastAPI
 app = FastAPI(
     title="DeFi Insight API",
@@ -33,14 +38,37 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# Configuração CORS
+# Adicionar middleware para tratamento de erros
+from src.api.middlewares.error_handler import error_handler_middleware
+app.middleware("http")(error_handler_middleware)
+
+# Configuração CORS melhorada
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, limitar para os domínios específicos
+    allow_origins=settings.get_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "Content-Range"]  # Útil para paginação
 )
+
+# Criar resposta padrão de saúde da API
+@app.get("/")
+async def root():
+    return {
+        "message": "Bem-vindo à API DeFi Insight. Acesse /docs para a documentação.",
+        "status": "online",
+        "version": app.version
+    }
+
+@app.get("/api/status")
+async def status():
+    return {
+        "status": "online",
+        "version": app.version,
+        "supabase_connection": True if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY") else False,
+        "environment": settings.ENVIRONMENT
+    }
 
 # Importando e registrando as rotas
 from src.api.routes import auth, token_analysis, portfolio, sentiment_analysis, onchain_analysis
@@ -50,18 +78,6 @@ app.include_router(token_analysis.router, prefix="/api/token", tags=["Análise T
 app.include_router(sentiment_analysis.router, prefix="/api/sentiment", tags=["Análise de Sentimento"])
 app.include_router(onchain_analysis.router, prefix="/api/onchain", tags=["Análise On-Chain"])
 app.include_router(portfolio.router, prefix="/api/portfolio", tags=["Portfólio"])
-
-@app.get("/")
-async def root():
-    return {"message": "Bem-vindo à API DeFi Insight. Acesse /docs para a documentação."}
-
-@app.get("/api/status")
-async def status():
-    return {
-        "status": "online",
-        "version": app.version,
-        "supabase_connection": True if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY") else False
-    }
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
@@ -73,4 +89,4 @@ if __name__ == "__main__":
         reload=False,
         workers=None,  # Desativar workers completamente
         loop="asyncio"
-    ) 
+    )
