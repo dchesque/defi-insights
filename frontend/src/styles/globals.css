@@ -2,38 +2,124 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===============================
+   Variáveis
+================================= */
 :root {
-  --primary-color: #5044FF;
-  --secondary-color: #FF44E3;
-  --background-dark: #0F1123;
-  --background-card: #1A1C31;
-  --text-light: #FFFFFF;
-  --text-secondary: #8C8DB0;
+  --background: 0 0% 100%; /* Fundo claro */
+  --foreground: 222.2 84% 4.9%; /* Texto escuro */
+  --background-card: 0 0% 100%; /* Fundo para cards */
+  --card-foreground: 222.2 84% 4.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222.2 84% 4.9%;
+  --primary: 221.2 83.2% 53.3%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 210 40% 96.1%;
+  --secondary-foreground: 222.2 47.4% 11.2%;
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --accent: 210 40% 96.1%;
+  --accent-foreground: 222.2 47.4% 11.2%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 214.3 31.8% 91.4%;
+  --input: 214.3 31.8% 91.4%;
+  --ring: 221.2 83.2% 53.3%;
+  --radius: 0.5rem;
+  --text-light: #ffffff;
 }
 
+.dark {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --background-card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 217.2 91.2% 59.8%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 224.3 76.3% 48%;
+}
+
+/* ===============================
+   Base
+================================= */
+@layer base {
+  /* Removendo a borda padrão em todos os elementos, pois isso deforma o layout */
+  /* * {
+    @apply border border-solid border-[color:var(--border)];
+  } */
+
+  /* Mantemos o body com cores base do Tailwind (caso queira trocar, pode ajustar) */
+  body {
+    @apply bg-[color:var(--background)] text-[color:var(--foreground)];
+  }
+}
+
+/* ===============================
+   Background do body
+   (Comente ou remova se quiser usar
+   o gradiente "bg-gradient-to-br from-black via-gray-900 to-slate-900" do JSX)
+================================= */
+/*
 body {
-  margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background-color: var(--background-dark);
-  color: var(--text-light);
+  background-color: var(--background);
+  background-image: 
+    radial-gradient(at 27% 37%, hsla(215, 98%, 21%, 0.3) 0px, transparent 0%), 
+    radial-gradient(at 97% 21%, hsla(266, 90%, 41%, 0.3) 0px, transparent 50%), 
+    radial-gradient(at 52% 99%, hsla(354, 98%, 60%, 0.2) 0px, transparent 50%), 
+    radial-gradient(at 10% 29%, hsla(256, 96%, 67%, 0.2) 0px, transparent 50%), 
+    radial-gradient(at 97% 96%, hsla(38, 60%, 74%, 0.1) 0px, transparent 50%), 
+    radial-gradient(at 33% 50%, hsla(222, 67%, 73%, 0.2) 0px, transparent 50%);
+  background-attachment: fixed;
 }
+*/
 
+/* ===============================
+   Utilitários
+================================= */
 .gradient-text {
-  background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+  /* Ajuste para usar var(--primary) e var(--secondary) se desejar */
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  display: inline-block;
 }
 
-.gradient-bg {
-  background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+.blur-background {
+  backdrop-filter: blur(10px);
+  background-color: rgba(26, 28, 49, 0.7);
 }
 
+.mouse-track-bg {
+  position: fixed;
+  width: 300px;
+  height: 300px;
+  background: radial-gradient(circle, rgba(88,64,255,0.3) 0%, rgba(255,68,227,0.1) 100%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: -1;
+  animation: mouse-track 3s infinite;
+}
+
+@keyframes mouse-track {
+  0% { transform: translate(-50%, -50%) scale(0.8); }
+  50% { transform: translate(-50%, -50%) scale(1); }
+  100% { transform: translate(-50%, -50%) scale(0.8); }
+}
+
+/* Cards */
 .card {
   background-color: var(--background-card);
   border-radius: 0.75rem;
@@ -41,8 +127,9 @@ body {
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
+/* Botão primário com gradiente */
 button.primary {
-  background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
   color: white;
   border: none;
   border-radius: 0.375rem;
@@ -56,6 +143,7 @@ button.primary:hover {
   opacity: 0.9;
 }
 
+/* Inputs e textareas */
 input, textarea {
   background-color: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -67,5 +155,13 @@ input, textarea {
 
 input:focus, textarea:focus {
   outline: none;
-  border-color: var(--primary-color);
+  border-color: var(--primary);
+}
+
+
+.gradient-text {
+  background: linear-gradient(90deg, #3b82f6, #ec4899); /* Ajuste as cores como preferir */
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }

@@ -41,7 +41,7 @@ function App() {
     <AuthContext.Provider value={auth}>
       {/* Remover Router */}
       <div className="min-h-screen flex flex-col">
-        <Header />
+        
         <main className="flex-grow">
           <Routes>
             {/* Rotas públicas */}
@@ -72,7 +72,7 @@ function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-        <Footer />
+        
       </div>
     </AuthContext.Provider>
   );

@@ -14,9 +14,9 @@ const Footer = () => {
               </div>
               <span className="font-bold">BaseMind<span className="text-indigo-400">.ai</span></span>
             </div>
-            <p className="text-gray-400 text-sm mb-4">
-              AI-powered cryptocurrency analysis for smarter investment decisions.
-            </p>
+            <h1 className="text-4xl md:text-5xl font-bold mb-6">
+  <span className="gradient-text">Análise de Criptomoedas com IA</span>
+</h1>
             <div className="flex space-x-4">
               <a href="#" className="text-gray-400 hover:text-white"><FaTwitter /></a>
               <a href="#" className="text-gray-400 hover:text-white"><FaDiscord /></a>
