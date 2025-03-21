@@ -1,138 +1,213 @@
 """
-Cliente para interação com o Telegram.
+Cliente para interação com o Telegram via web scraping.
 """
 import os
+import httpx
+import re
+import json
+from bs4 import BeautifulSoup
 from typing import Dict, List, Any, Optional
 from loguru import logger
+from datetime import datetime, timedelta
+import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 class TelegramClient:
     """
-    Cliente simulado para obter dados do Telegram.
-    Em vez de usar web scraping, vamos gerar apenas dados simulados.
+    Cliente para obter dados do Telegram via web scraping de canais públicos.
+    Documentação: https://core.telegram.org/api/obtaining_api_id
     """
     
     def __init__(self):
-        """Inicializa o cliente simulado do Telegram."""
-        logger.info("Inicializando cliente simulado do Telegram - apenas dados de demonstração")
+        """Inicializa o cliente do Telegram."""
+        logger.info("Inicializando cliente real do Telegram para canais públicos")
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        self.cache = {}
+        self.cache_ttl = 900  # 15 minutos
+        
+        # Canais públicos de criptmoedas para monitorar
+        self.crypto_channels = {
+            "cryptosignalalert": "https://t.me/s/cryptosignalalert",
+            "crypto_discussions": "https://t.me/s/cryptoforbeginners",
+            "altcoinsignal": "https://t.me/s/altcoinsignal",
+            "binance_announcements": "https://t.me/s/binance_announcements",
+            "whaleanalert": "https://t.me/s/whale_alert_io",
+            "cryptonews": "https://t.me/s/cryptonews"
+        }
+        
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=(lambda e: isinstance(e, (httpx.HTTPError, asyncio.TimeoutError)))
+    )
+    async def _fetch_channel_content(self, channel_url: str) -> str:
+        """
+        Faz o download do conteúdo de um canal do Telegram.
+        
+        Args:
+            channel_url: URL do canal público
+            
+        Returns:
+            HTML do canal
+        """
+        logger.info(f"Consultando canal do Telegram: {channel_url}")
+        
+        # Verificar se temos dados em cache
+        if channel_url in self.cache:
+            data, timestamp = self.cache[channel_url]
+            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
+                logger.info(f"Usando dados em cache para {channel_url}")
+                return data
+        
+        # Fazer requisição HTTP para o canal público
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                headers = {"User-Agent": self.user_agent}
+                response = await client.get(channel_url, headers=headers, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Salvar no cache
+                self.cache[channel_url] = (response.text, datetime.now())
+                
+                return response.text
+        except Exception as e:
+            logger.error(f"Erro ao acessar canal do Telegram: {str(e)}")
+            raise
+            
+    async def _parse_channel_messages(self, html_content: str) -> List[Dict[str, Any]]:
+        """
+        Extrai mensagens do HTML de um canal do Telegram.
+        
+        Args:
+            html_content: HTML do canal
+            
+        Returns:
+            Lista de mensagens extraídas
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            messages = []
+            
+            # Encontrar todas as mensagens
+            message_containers = soup.select('div.tgme_widget_message_bubble')
+            
+            for container in message_containers:
+                try:
+                    # Extrair texto da mensagem
+                    text_element = container.select_one('div.tgme_widget_message_text')
+                    text = text_element.get_text(strip=True) if text_element else ""
+                    
+                    # Extrair timestamp
+                    time_element = container.select_one('a.tgme_widget_message_date time')
+                    timestamp = time_element.get('datetime') if time_element else ""
+                    
+                    # Extrair views
+                    views_element = container.select_one('span.tgme_widget_message_views')
+                    views = views_element.get_text(strip=True) if views_element else "0"
+                    
+                    # Extrair autor (nome do canal)
+                    author_element = container.select_one('div.tgme_widget_message_author')
+                    author = author_element.get_text(strip=True) if author_element else ""
+                    
+                    # Extrair ID da mensagem
+                    link_element = container.select_one('a.tgme_widget_message_date')
+                    message_url = link_element.get('href') if link_element else ""
+                    message_id = message_url.split('/')[-1] if message_url else ""
+                    
+                    messages.append({
+                        "id": message_id,
+                        "text": text,
+                        "timestamp": timestamp,
+                        "views": views,
+                        "author": author
+                    })
+                except Exception as e:
+                    logger.warning(f"Erro ao processar mensagem: {str(e)}")
+                    continue
+                    
+            return messages
+        except Exception as e:
+            logger.error(f"Erro ao analisar HTML do Telegram: {str(e)}")
+            return []
         
     async def get_recent_discussions(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Simula a obtenção de discussões recentes relacionadas a uma consulta.
+        Obtém discussões recentes relacionadas a uma consulta (símbolo de token) em canais públicos.
         
         Args:
             query: Termo de busca (ex: símbolo do token)
             limit: Número máximo de resultados
             
         Returns:
-            Lista de mensagens simuladas.
+            Lista de mensagens relacionadas à consulta.
         """
-        logger.info(f"Gerando discussões simuladas do Telegram para: {query}")
-        return self._get_mock_data(query)[:limit]
+        logger.info(f"Buscando discussões sobre {query} no Telegram")
+        all_messages = []
+        
+        # Buscar em todos os canais
+        for channel_name, channel_url in self.crypto_channels.items():
+            try:
+                html_content = await self._fetch_channel_content(channel_url)
+                messages = await self._parse_channel_messages(html_content)
+                
+                # Filtrar mensagens relacionadas à consulta
+                related_messages = [
+                    msg for msg in messages 
+                    if query.lower() in msg["text"].lower()
+                ]
+                
+                all_messages.extend(related_messages)
+            except Exception as e:
+                logger.error(f"Erro ao buscar mensagens no canal {channel_name}: {str(e)}")
+        
+        # Ordenar por timestamp (mais recentes primeiro) e limitar ao número solicitado
+        all_messages.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return all_messages[:limit]
         
     async def get_channel_messages(self, channel_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
-        Simula a obtenção de mensagens de um canal do Telegram.
+        Obtém mensagens de um canal específico do Telegram.
         
         Args:
             channel_name: Nome do canal
             limit: Número máximo de mensagens para retornar
             
         Returns:
-            Lista de mensagens simuladas do canal.
+            Lista de mensagens do canal.
         """
-        logger.info(f"Gerando mensagens simuladas para o canal Telegram: {channel_name}")
-        # Usar mock data independentemente do canal solicitado
-        return self._get_mock_data("CRYPTO")[:limit]
-            
-    def _get_mock_data(self, query: str) -> List[Dict[str, Any]]:
-        """
-        Gera dados simulados para demonstração.
+        logger.info(f"Obtendo mensagens do canal {channel_name}")
         
-        Args:
-            query: Termo de busca (ex: símbolo do token).
+        # Verificar se o canal está na lista
+        channel_url = self.crypto_channels.get(channel_name)
+        if not channel_url:
+            logger.warning(f"Canal {channel_name} não encontrado, usando canal padrão")
+            # Usar o primeiro canal como padrão
+            channel_name, channel_url = next(iter(self.crypto_channels.items()))
+        
+        try:
+            html_content = await self._fetch_channel_content(channel_url)
+            messages = await self._parse_channel_messages(html_content)
+            return messages[:limit]
+        except Exception as e:
+            logger.error(f"Erro ao obter mensagens do canal {channel_name}: {str(e)}")
+            return []
             
+    async def check_connection(self) -> bool:
+        """
+        Verifica se a conexão com o Telegram está funcionando corretamente.
+        
         Returns:
-            Lista de mensagens simuladas do Telegram.
+            True se a conexão estiver funcionando, False caso contrário.
         """
-        # Base de canais cripto
-        crypto_channels = [
-            "CryptoAlert",
-            "CryptoSignalz",
-            "WhaleAlerts",
-            "TradingStrategyGuru",
-            "DeFiUpdates"
-        ]
-        
-        # Dados genéricos para a demonstração
-        sample_messages = [
-            {
-                "id": f"CryptoAlert_{1000 + i}",
-                "text": f"🚨 ALERTA: {query} está mostrando um padrão de acumulação forte. Estamos vendo baleias comprando nos últimos dias. Fiquem atentos para um possível movimento de alta nas próximas 24-48 horas. #crypto #{query.lower()}",
-                "timestamp": "2023-06-15T14:30:00Z",
-                "views": "15.7K",
-                "author": crypto_channels[0]
-            } for i in range(2)
-        ]
-        
-        sample_messages.extend([
-            {
-                "id": f"CryptoSignalz_{2000 + i}",
-                "text": f"📊 ANÁLISE: {query} está se aproximando de uma resistência importante em [PREÇO]. Se romper, próximo alvo é [ALVO_ALTO]. Se rejeitar, suporte em [SUPORTE]. Volume crescente nas últimas 4h. #trading #{query.lower()}",
-                "timestamp": "2023-06-15T12:15:00Z",
-                "views": "12.3K",
-                "author": crypto_channels[1]
-            } for i in range(2)
-        ])
-        
-        sample_messages.extend([
-            {
-                "id": f"WhaleAlerts_{3000 + i}",
-                "text": f"🐋 MOVIMENTAÇÃO: Baleia acaba de transferir {1000 + i*500} {query} (${(1000 + i*500) * 10}) da exchange Binance para carteira desconhecida. Hash da transação: 0x{'a'*64}",
-                "timestamp": "2023-06-15T10:45:00Z",
-                "views": "9.8K",
-                "author": crypto_channels[2]
-            } for i in range(1)
-        ])
-        
-        sample_messages.extend([
-            {
-                "id": f"TradingStrategyGuru_{4000 + i}",
-                "text": f"💡 ESTRATÉGIA: Para {query}, estamos usando a estratégia de acumulação em níveis de suporte com stop abaixo do último fundo. RSI mostra sobrevendido em timeframe de 4h, potencial reversão em breve. Alvo: +15-20%. #trading #{query.lower()}",
-                "timestamp": "2023-06-15T08:30:00Z",
-                "views": "11.2K",
-                "author": crypto_channels[3]
-            } for i in range(1)
-        ])
-        
-        sample_messages.extend([
-            {
-                "id": f"DeFiUpdates_{5000 + i}",
-                "text": f"📢 NOTÍCIA: Equipe de {query} anunciou nova funcionalidade que permitirá staking com APY de 12-15%. Lançamento previsto para o próximo mês. Isso deve aumentar significativamente o TVL do projeto. #defi #{query.lower()}",
-                "timestamp": "2023-06-15T07:15:00Z",
-                "views": "8.5K",
-                "author": crypto_channels[4]
-            } for i in range(2)
-        ])
-        
-        # Mensagens especiais para BTC e ETH
-        if query.upper() == "BTC":
-            sample_messages.append({
-                "id": "CryptoAlert_special",
-                "text": "🔥 BITCOIN: Estamos vendo uma acumulação institucional massiva de BTC nas últimas semanas. Dados on-chain mostram saídas recordes das exchanges. Halving se aproxima e historicamente é um catalisador de bull runs. #BTC #Bitcoin",
-                "timestamp": "2023-06-14T18:20:00Z",
-                "views": "42.6K",
-                "author": "CryptoAlert"
-            })
-        elif query.upper() == "ETH":
-            sample_messages.append({
-                "id": "DeFiUpdates_special",
-                "text": "⚡ ETHEREUM: Com as melhorias pós-merge e redução na emissão, ETH está se tornando cada vez mais deflacionário. Taxas de gás estão estáveis e desenvolvimento de L2s está acelerando a escalabilidade. Próximos 12 meses serão decisivos. #ETH #Ethereum",
-                "timestamp": "2023-06-14T17:45:00Z",
-                "views": "37.8K",
-                "author": "DeFiUpdates"
-            })
-            
-        return sample_messages
+        try:
+            # Tenta acessar o primeiro canal da lista
+            _, channel_url = next(iter(self.crypto_channels.items()))
+            await self._fetch_channel_content(channel_url)
+            logger.info("Conexão com o Telegram está funcionando")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao verificar conexão com o Telegram: {str(e)}")
+            return False
 
 # Instância global do cliente
 telegram_client = TelegramClient()

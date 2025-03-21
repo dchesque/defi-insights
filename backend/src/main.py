@@ -5,12 +5,18 @@ import os
 import sys
 from dotenv import load_dotenv
 from loguru import logger
+import subprocess
 
 # Adicionar o diretório raiz ao sys.path para resolver problemas de importação
 current_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
+
+# Definir variáveis de ambiente para evitar multiprocessamento
+os.environ["PYTHONOPTIMIZE"] = "1"  # Desativar assert e debug
+os.environ["PYTHONUNBUFFERED"] = "1"  # Desativar buffer
+os.environ["UVICORN_NO_FORK"] = "1"  # Evitar forking de processos
 
 # Carregar variáveis de ambiente com encoding específico
 try:
@@ -40,6 +46,7 @@ app.add_middleware(
 from src.api.routes import auth, token_analysis, portfolio, sentiment_analysis, onchain_analysis
 app.include_router(auth.router, prefix="/api/auth", tags=["Autenticação"])
 app.include_router(token_analysis.router, prefix="/api/analysis", tags=["Análise Técnica"])
+app.include_router(token_analysis.router, prefix="/api/token", tags=["Análise Técnica"])
 app.include_router(sentiment_analysis.router, prefix="/api/sentiment", tags=["Análise de Sentimento"])
 app.include_router(onchain_analysis.router, prefix="/api/onchain", tags=["Análise On-Chain"])
 app.include_router(portfolio.router, prefix="/api/portfolio", tags=["Portfólio"])
@@ -60,10 +67,10 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     # Desativar completamente o multiprocessamento e o reload para evitar problemas no Windows
     uvicorn.run(
-        "main:app", 
+        "src.main:app", 
         host="0.0.0.0", 
-        port=port, 
-        reload=False,  # Desativar o reload para evitar multiprocessamento
-        workers=1,     # Usar apenas um worker
-        use_colors=True
+        port=port,
+        reload=False,
+        workers=None,  # Desativar workers completamente
+        loop="asyncio"
     ) 

@@ -4,6 +4,7 @@ Cliente para a API do CoinGecko - uma fonte gratuita de dados de criptomoedas.
 import os
 import httpx
 import json
+import asyncio
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 from loguru import logger
@@ -618,9 +619,326 @@ class CoinGeckoClient:
         except Exception as e:
             logger.error(f"Erro ao obter histórico para {symbol}: {str(e)}")
             return []
+    
+    async def get_coin_news(self, coin_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Obtém notícias recentes relacionadas a uma criptomoeda.
+        Documentação: https://www.coingecko.com/api/documentation
+        
+        Args:
+            coin_id: ID da moeda no CoinGecko (ex: 'bitcoin')
+            limit: Número máximo de notícias a retornar
+            
+        Returns:
+            Lista de notícias relacionadas à moeda
+        """
+        logger.info(f"Obtendo notícias para {coin_id}")
+        
+        # Primeiro, buscar o ID exato no CoinGecko se for um símbolo
+        if len(coin_id) < 5:  # Provavelmente é um símbolo como BTC, ETH
+            coins_list = await self.get_coins_list()
+            for coin in coins_list:
+                if coin.get('symbol', '').lower() == coin_id.lower():
+                    coin_id = coin.get('id')
+                    break
+        
+        # Buscar notícias usando a API de status do mercado (inclui notícias)
+        try:
+            endpoint = "search/trending"
+            trending_data = await self._make_request(endpoint, cache_category="news")
+            
+            # A API do CoinGecko não fornece uma endpoint específica para notícias
+            # Vamos usar a API de busca/tendências como alternativa
+            
+            # Obter dados da moeda para mais informações
+            coin_data = await self.get_coin_data(coin_id)
+            coin_name = coin_data.get('name', '').lower()
+            
+            # Buscar também dados atuais de mercado
+            endpoint = "coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "ids": coin_id,
+                "order": "market_cap_desc",
+                "per_page": 1,
+                "page": 1,
+                "sparkline": "false"
+            }
+            market_data = await self._make_request(endpoint, params, cache_category="markets")
+            
+            # Coletar todas as notícias de tendências
+            all_news = []
+            
+            # Adicionar notícias baseadas em tendências
+            if trending_data and "coins" in trending_data:
+                trending_coins = trending_data.get("coins", [])
+                
+                # Verificar se a moeda está nas tendências
+                is_trending = any(item.get("item", {}).get("id") == coin_id for item in trending_coins)
+                
+                if is_trending:
+                    all_news.append({
+                        "title": f"{coin_name.title()} está em tendência no CoinGecko",
+                        "description": f"{coin_name.title()} está entre as criptomoedas mais pesquisadas nas últimas 24 horas.",
+                        "url": f"https://www.coingecko.com/en/coins/{coin_id}",
+                        "source": "CoinGecko",
+                        "date": datetime.now().isoformat()
+                    })
+            
+            # Adicionar notícias baseadas em dados de mercado
+            if market_data and len(market_data) > 0:
+                market_item = market_data[0]
+                
+                price = market_item.get("current_price")
+                price_change_24h = market_item.get("price_change_percentage_24h")
+                market_cap = market_item.get("market_cap")
+                market_cap_rank = market_item.get("market_cap_rank")
+                
+                if price and price_change_24h:
+                    change_type = "subiu" if price_change_24h > 0 else "caiu"
+                    all_news.append({
+                        "title": f"Preço de {coin_name.title()} {change_type} {abs(price_change_24h):.2f}% nas últimas 24h",
+                        "description": f"{coin_name.title()} está sendo negociado a ${price:.2f} com capitalização de mercado de ${market_cap:,}.",
+                        "url": f"https://www.coingecko.com/en/coins/{coin_id}",
+                        "source": "CoinGecko Market Data",
+                        "date": datetime.now().isoformat()
+                    })
+                    
+                if market_cap_rank:
+                    all_news.append({
+                        "title": f"{coin_name.title()} está na posição #{market_cap_rank} por capitalização de mercado",
+                        "description": f"Com uma capitalização de mercado de ${market_cap:,}, {coin_name.title()} é a #{market_cap_rank} criptomoeda.",
+                        "url": f"https://www.coingecko.com/en/coins/{coin_id}",
+                        "source": "CoinGecko Rankings",
+                        "date": datetime.now().isoformat()
+                    })
+            
+            # Adicionar dados de desenvolvedores se disponível
+            if "developer_data" in coin_data:
+                dev_data = coin_data.get("developer_data", {})
+                
+                if dev_data.get("pull_request_contributors"):
+                    all_news.append({
+                        "title": f"{coin_name.title()} conta com {dev_data.get('pull_request_contributors')} contribuidores",
+                        "description": f"O projeto {coin_name.title()} tem {dev_data.get('forks', 0)} forks, {dev_data.get('stars', 0)} estrelas no GitHub e {dev_data.get('subscribers', 0)} assinantes.",
+                        "url": f"https://www.coingecko.com/en/coins/{coin_id}/developers",
+                        "source": "CoinGecko Developer Data",
+                        "date": datetime.now().isoformat()
+                    })
+            
+            # Adicionar dados da comunidade se disponível
+            if "community_data" in coin_data:
+                community = coin_data.get("community_data", {})
+                
+                if community.get("twitter_followers"):
+                    all_news.append({
+                        "title": f"{coin_name.title()} tem {community.get('twitter_followers'):,} seguidores no Twitter",
+                        "description": f"A comunidade de {coin_name.title()} inclui {community.get('reddit_subscribers', 0):,} assinantes no Reddit.",
+                        "url": f"https://www.coingecko.com/en/coins/{coin_id}/social_media",
+                        "source": "CoinGecko Community Data",
+                        "date": datetime.now().isoformat()
+                    })
+            
+            # Adicionar dados de liquidez de mercado
+            if "tickers" in coin_data:
+                tickers = coin_data.get("tickers", [])
+                active_exchanges = len(set(ticker.get("market", {}).get("name") for ticker in tickers if ticker.get("market")))
+                
+                if active_exchanges > 0:
+                    all_news.append({
+                        "title": f"{coin_name.title()} está listado em {active_exchanges} exchanges",
+                        "description": f"{coin_name.title()} pode ser negociado em diversas exchanges com diferentes pares de negociação.",
+                        "url": f"https://www.coingecko.com/en/coins/{coin_id}#markets",
+                        "source": "CoinGecko Markets",
+                        "date": datetime.now().isoformat()
+                    })
+            
+            # Limitar ao número de notícias solicitado
+            return all_news[:limit]
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter notícias para {coin_id}: {str(e)}")
+            return []
 
-# Importação obrigatória para o delay entre requisições
-import asyncio
+    async def get_token_info(self, token_id: str) -> Dict[str, Any]:
+        """
+        Obtém informações completas sobre um token, incluindo preço, histórico e dados de mercado.
+        
+        Args:
+            token_id: ID do token no CoinGecko
+            
+        Returns:
+            Dicionário com informações completas do token
+        """
+        logger.info(f"Obtendo informações completas para o token {token_id}")
+        
+        try:
+            # Obter dados do token
+            token_data = await self.get_coin_data(token_id)
+            
+            # Obter histórico de preços (30 dias)
+            price_history = await self.get_coin_market_chart(token_id, 'usd', days='30')
+            
+            # Compilar informações
+            return {
+                "token_id": token_id,
+                "name": token_data.get("name"),
+                "symbol": token_data.get("symbol"),
+                "price_data": {
+                    "current_price_usd": token_data.get("market_data", {}).get("current_price", {}).get("usd"),
+                    "market_cap_usd": token_data.get("market_data", {}).get("market_cap", {}).get("usd"),
+                    "total_volume_usd": token_data.get("market_data", {}).get("total_volume", {}).get("usd"),
+                    "price_change_24h": token_data.get("market_data", {}).get("price_change_percentage_24h"),
+                    "price_change_7d": token_data.get("market_data", {}).get("price_change_percentage_7d"),
+                    "price_change_30d": token_data.get("market_data", {}).get("price_change_percentage_30d"),
+                    "all_time_high": token_data.get("market_data", {}).get("ath", {}).get("usd"),
+                    "all_time_low": token_data.get("market_data", {}).get("atl", {}).get("usd")
+                },
+                "liquidity_data": {
+                    "total_supply": token_data.get("market_data", {}).get("total_supply"),
+                    "circulating_supply": token_data.get("market_data", {}).get("circulating_supply"),
+                    "fdv_to_mcap_ratio": self._calculate_fdv_to_mcap_ratio(token_data.get("market_data", {}))
+                },
+                "market_data": token_data.get("market_data", {}),
+                "community_data": token_data.get("community_data", {}),
+                "developer_data": token_data.get("developer_data", {}),
+                "price_history": price_history
+            }
+        except Exception as e:
+            logger.error(f"Erro ao obter informações do token {token_id}: {str(e)}")
+            return {"error": f"Falha ao obter informações: {str(e)}"}
+            
+    def _calculate_fdv_to_mcap_ratio(self, market_data: Dict[str, Any]) -> Optional[float]:
+        """
+        Calcula o ratio entre Fully Diluted Valuation e Market Cap.
+        
+        Args:
+            market_data: Dados de mercado do token
+            
+        Returns:
+            Ratio FDV/MCAP ou None se dados insuficientes
+        """
+        try:
+            mcap = market_data.get("market_cap", {}).get("usd")
+            total_supply = market_data.get("total_supply")
+            circulating_supply = market_data.get("circulating_supply")
+            current_price = market_data.get("current_price", {}).get("usd")
+            
+            if all([mcap, total_supply, circulating_supply, current_price]) and circulating_supply > 0:
+                fdv = total_supply * current_price
+                return fdv / mcap
+            return None
+        except (TypeError, ZeroDivisionError):
+            return None
+
+    async def get_coin_by_contract(self, contract_address: str, chain: str = 'ethereum') -> Dict[str, Any]:
+        """
+        Busca um token pelo endereço do contrato na blockchain.
+        
+        Args:
+            contract_address: Endereço do contrato na blockchain
+            chain: Nome da blockchain (ethereum, binance-smart-chain, etc.)
+            
+        Returns:
+            Informações do token ou erro
+        """
+        logger.info(f"Buscando token pelo endereço {contract_address} na chain {chain}")
+        
+        try:
+            # Mapear chain para o formato usado pelo CoinGecko
+            chain_map = {
+                'eth': 'ethereum',
+                'bsc': 'binance-smart-chain',
+                'polygon': 'polygon-pos',
+                'arbitrum': 'arbitrum-one',
+                'optimism': 'optimistic-ethereum',
+                'avalanche': 'avalanche'
+            }
+            
+            chain_id = chain_map.get(chain.lower(), chain.lower())
+            
+            # Buscar lista de tokens
+            coins = await self.get_coins_list()
+            
+            # Filtrar por tokens que tenham informações de plataforma
+            for coin in coins:
+                if 'platforms' in coin and chain_id in coin['platforms']:
+                    # Converter endereços para lowercase para comparação
+                    if coin['platforms'][chain_id].lower() == contract_address.lower():
+                        logger.info(f"Token encontrado: {coin['id']} ({coin['symbol']})")
+                        return coin
+            
+            logger.warning(f"Token não encontrado para o endereço {contract_address} na chain {chain_id}")
+            return {"error": "Token não encontrado"}
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar token por contrato: {str(e)}")
+            return {"error": f"Falha ao buscar token: {str(e)}"}
+
+    async def get_coin_by_id(self, coin_id: str) -> Dict[str, Any]:
+        """
+        Obtém informações de um token pelo seu ID no CoinGecko.
+        
+        Args:
+            coin_id: ID do token no CoinGecko
+            
+        Returns:
+            Dict com informações do token ou dict com erro
+        """
+        try:
+            # Primeiro busca o token na lista de moedas
+            coins = await self.get_coins_list()
+            found = False
+            
+            for coin in coins:
+                if coin.get("id") == coin_id or coin.get("symbol", "").lower() == coin_id:
+                    found = True
+                    coin_id = coin.get("id")
+                    break
+            
+            if not found:
+                # Tentar buscar por meio da pesquisa
+                search_results = await self.search_coins(coin_id)
+                if search_results and len(search_results) > 0:
+                    coin_id = search_results[0].get("id")
+                    found = True
+            
+            if not found:
+                return {"error": f"Token não encontrado: {coin_id}"}
+                
+            # Buscar dados detalhados do token
+            return await self.get_coin_data(coin_id)
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar token por ID {coin_id}: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_coin_market_data(self, coin_id: str) -> Dict[str, Any]:
+        """
+        Obtém dados de mercado de um token pelo seu ID no CoinGecko.
+        
+        Args:
+            coin_id: ID do token no CoinGecko
+            
+        Returns:
+            Dict com dados de mercado do token
+        """
+        try:
+            # Obter dados detalhados do token
+            coin_data = await self.get_coin_data(coin_id)
+            
+            if "error" in coin_data:
+                return {"error": coin_data["error"]}
+                
+            # Extrair apenas os dados de mercado
+            if "market_data" in coin_data:
+                return coin_data["market_data"]
+            else:
+                return {"error": f"Dados de mercado não disponíveis para o token {coin_id}"}
+                
+        except Exception as e:
+            logger.error(f"Erro ao buscar dados de mercado para {coin_id}: {str(e)}")
+            return {"error": str(e)}
 
 # Instância global do cliente
 coingecko_client = CoinGeckoClient()

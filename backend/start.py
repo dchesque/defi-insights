@@ -48,6 +48,11 @@ def setup_env():
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
             print(f"{Fore.GREEN}✓ Diretório criado: {dir_name}{Style.RESET_ALL}")
+    
+    # Configurar variáveis específicas para evitar multiprocessamento
+    os.environ["PYTHONOPTIMIZE"] = "1"    # Desativar assert e debug
+    os.environ["PYTHONUNBUFFERED"] = "1"  # Desativar buffer
+    os.environ["UVICORN_NO_FORK"] = "1"   # Evitar forking de processos
 
 def start_server():
     """Inicia o servidor FastAPI usando Uvicorn."""
@@ -62,39 +67,30 @@ def start_server():
     print(f"   URL: {Fore.GREEN}http://0.0.0.0:{port}{Style.RESET_ALL}")
     print(f"   Documentação: {Fore.GREEN}http://0.0.0.0:{port}/docs{Style.RESET_ALL}")
     print(f"   Modo depuração: {Fore.GREEN}{'Ativado' if debug else 'Desativado'}{Style.RESET_ALL}")
-    print(f"   {Fore.YELLOW}Atenção: Reload automático desativado para evitar problemas no Windows{Style.RESET_ALL}")
+    print(f"   {Fore.YELLOW}Atenção: Multiprocessamento desativado para compatibilidade com Windows{Style.RESET_ALL}")
     
-    # Executar uvicorn como módulo diretamente sem multiprocessamento
+    # Comando simples que evita o multiprocessamento
     try:
+        # Usar python -m para executar uvicorn diretamente sem subprocess
         cmd = [
-            sys.executable, "-m", "uvicorn", 
+            sys.executable, 
+            "-m", 
+            "uvicorn", 
             "src.main:app", 
             "--host", "0.0.0.0", 
             "--port", str(port),
-            # Desativar reload para evitar problemas de multiprocessamento
-            # "--reload" if debug else "",
-            "--no-use-colors" if not debug else "",
-            # Usar apenas um worker
-            "--workers", "1"
+            "--workers", "1",  # Usar apenas um worker
         ]
-        # Adicionar variável de ambiente para desativar multiprocessamento
-        env = os.environ.copy()
-        env["PYTHONPATH"] = current_dir
-        
-        cmd = [item for item in cmd if item]  # Remover itens vazios
-        
-        process = subprocess.Popen(cmd, env=env)
         
         # Configurar manipulador de sinal para encerrar adequadamente
         def signal_handler(sig, frame):
             print(f"\n{Fore.YELLOW}⚠️ Encerrando servidor...{Style.RESET_ALL}")
-            process.terminate()
-            process.wait()
-            print(f"{Fore.GREEN}✓ Servidor encerrado.{Style.RESET_ALL}")
             sys.exit(0)
             
         signal.signal(signal.SIGINT, signal_handler)
-        process.wait()  # Aguardar até que o processo seja encerrado
+        
+        # Iniciar o processo diretamente com execvp
+        os.execvp(cmd[0], cmd)
         
     except Exception as e:
         print(f"{Fore.RED}❌ Erro ao iniciar o servidor: {str(e)}{Style.RESET_ALL}")

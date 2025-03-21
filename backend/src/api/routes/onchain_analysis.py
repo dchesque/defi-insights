@@ -1,185 +1,178 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import Dict, Any, List
+from fastapi import APIRouter, HTTPException
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
+from datetime import datetime
+import uuid
+from loguru import logger
+
+from ...models.onchain import OnchainRequest, OnchainResponse
 from ...core.agent_manager import agent_manager
 from ...agents.onchain_agent import OnchainAgent
-from ...integrations.supabase import supabase
+from ...db.database import Database
 
 router = APIRouter()
+db = Database()
 
-class OnchainAnalysisRequest(BaseModel):
-    address: str
-    chain: str = "eth"  # default Ethereum
-    user_id: str
-
-class OnchainAnalysisResponse(BaseModel):
-    analysis_id: str
-    address: str
-    chain: str
-    holder_distribution: Dict[str, Any]
-    transaction_metrics: Dict[str, Any]
-    liquidity_analysis: Dict[str, Any]
-    risk_assessment: Dict[str, Any]
-    timestamp: str
-
-# Registrar o agente on-chain
+# Registrar o agente de análise onchain
 onchain_agent = OnchainAgent()
 agent_manager.register_agent(onchain_agent)
 
-@router.post("/", response_model=OnchainAnalysisResponse)
-async def analyze_token_onchain(request: OnchainAnalysisRequest):
+@router.post("/", response_model=OnchainResponse)
+async def analyze_token_onchain(request: OnchainRequest):
     """
-    Realiza análise on-chain de um token.
+    Realiza análise onchain de um token.
     
     Args:
         request: Dados do token para análise
         
     Returns:
-        OnchainAnalysisResponse: Resultado da análise on-chain
+        OnchainResponse: Resultado da análise onchain
     """
     try:
-        # Executa análise on-chain
+        # Executa análise onchain
         analysis_result = await agent_manager.run_analysis(
             token_data={
-                "address": request.address,
+                "address": request.token_address,
                 "chain": request.chain
             },
             agent_names=["OnchainAgent"]
         )
         
-        if "error" in analysis_result.get("OnchainAgent", {}):
+        agent_result = analysis_result.get("OnchainAgent", {})
+        
+        if "error" in agent_result:
+            logger.error(f"Erro na análise onchain: {agent_result['error']}")
             raise HTTPException(
-                status_code=400,
-                detail=analysis_result["OnchainAgent"]["error"]
+                status_code=500, 
+                detail=f"Erro ao realizar análise onchain: {agent_result['error']}"
             )
         
         # Prepara dados para salvar no banco
+        analysis_id = str(uuid.uuid4())
         analysis_data = {
+            "id": analysis_id,
             "user_id": request.user_id,
-            "address": request.address,
+            "token_address": request.token_address,
             "chain": request.chain,
             "analysis_type": "onchain",
-            "holder_distribution": analysis_result["OnchainAgent"]["holder_distribution"],
-            "transaction_metrics": analysis_result["OnchainAgent"]["transaction_metrics"],
-            "liquidity_analysis": analysis_result["OnchainAgent"]["liquidity_analysis"],
-            "risk_assessment": analysis_result["OnchainAgent"]["risk_assessment"],
-            "timestamp": analysis_result["OnchainAgent"]["timestamp"]
+            "result": agent_result,
+            "created_at": datetime.now().isoformat()
         }
         
-        # Salva análise no banco
-        result = supabase.save_analysis(analysis_data)
+        # Tenta salvar análise no banco - permite continuar mesmo se falhar
+        try:
+            result = await db.save_analysis(analysis_data)
+            if "error" in result:
+                logger.error(f"Erro ao salvar análise no banco: {result['error']}")
+            else:
+                analysis_id = result.get("id", analysis_id)
+        except Exception as e:
+            logger.error(f"Erro ao acessar banco de dados: {str(e)}")
         
-        if result.error:
-            raise HTTPException(
-                status_code=500,
-                detail="Erro ao salvar análise no banco de dados"
-            )
-        
-        # Retorna resposta formatada
-        return OnchainAnalysisResponse(
-            analysis_id=result.data[0]["id"],
-            address=request.address,
-            chain=request.chain,
-            holder_distribution=analysis_result["OnchainAgent"]["holder_distribution"],
-            transaction_metrics=analysis_result["OnchainAgent"]["transaction_metrics"],
-            liquidity_analysis=analysis_result["OnchainAgent"]["liquidity_analysis"],
-            risk_assessment=analysis_result["OnchainAgent"]["risk_assessment"],
-            timestamp=analysis_result["OnchainAgent"]["timestamp"]
+        # Formatar resposta
+        onchain_response = OnchainResponse(
+            analysis_id=analysis_id,
+            token_address=request.token_address,
+            **agent_result
         )
         
+        return onchain_response
+        
+    except HTTPException as he:
+        # Propagar exceções HTTP
+        raise he
     except Exception as e:
+        logger.error(f"Erro ao realizar análise onchain: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao realizar análise on-chain: {str(e)}"
+            detail=f"Erro ao realizar análise onchain: {str(e)}"
         )
 
-@router.get("/{analysis_id}", response_model=OnchainAnalysisResponse)
+@router.get("/{analysis_id}", response_model=OnchainResponse)
 async def get_onchain_analysis(analysis_id: str):
     """
-    Obtém uma análise on-chain específica pelo ID.
+    Obtém uma análise onchain específica pelo ID.
     
     Args:
         analysis_id: ID da análise
         
     Returns:
-        OnchainAnalysisResponse: Resultado da análise on-chain
+        OnchainResponse: Resultado da análise onchain
     """
     try:
         # Busca análise no banco
-        result = supabase.client.table("token_analyses").select("*").eq("id", analysis_id).execute()
+        analysis = await db.get_analysis(analysis_id)
         
-        if not result.data:
+        if "error" in analysis:
             raise HTTPException(
                 status_code=404,
                 detail="Análise não encontrada"
             )
         
-        analysis = result.data[0]
-        
-        if analysis["analysis_type"] != "onchain":
+        if analysis.get("analysis_type") != "onchain":
             raise HTTPException(
                 status_code=400,
-                detail="A análise solicitada não é do tipo on-chain"
+                detail="A análise solicitada não é do tipo onchain"
             )
         
-        return OnchainAnalysisResponse(
-            analysis_id=analysis["id"],
-            address=analysis["address"],
-            chain=analysis["chain"],
-            holder_distribution=analysis["holder_distribution"],
-            transaction_metrics=analysis["transaction_metrics"],
-            liquidity_analysis=analysis["liquidity_analysis"],
-            risk_assessment=analysis["risk_assessment"],
-            timestamp=analysis["timestamp"]
+        # Extrair os dados da resposta
+        result = analysis.get("result", {})
+        
+        # Formatar resposta
+        onchain_response = OnchainResponse(
+            analysis_id=analysis.get("id"),
+            token_address=analysis.get("token_address"),
+            **result
         )
         
+        return onchain_response
+        
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao obter análise: {str(e)}"
         )
 
-@router.get("/user/{user_id}", response_model=List[OnchainAnalysisResponse])
-async def get_user_onchain_analyses(user_id: str):
+@router.get("/user/{user_id}", response_model=List[OnchainResponse])
+async def get_user_onchain_analyses(user_id: str, limit: int = 10):
     """
-    Obtém todas as análises on-chain de um usuário.
+    Obtém análises onchain de um usuário.
     
     Args:
         user_id: ID do usuário
+        limit: Número máximo de análises a retornar
         
     Returns:
-        List[OnchainAnalysisResponse]: Lista de análises on-chain
+        List[OnchainResponse]: Lista de análises onchain
     """
     try:
         # Busca análises do usuário no banco
-        result = supabase.get_user_analyses(user_id)
+        analyses = await db.get_user_analyses(user_id, analysis_type="onchain", limit=limit)
         
-        if result.error:
+        if isinstance(analyses, dict) and "error" in analyses:
             raise HTTPException(
                 status_code=500,
-                detail="Erro ao buscar análises do usuário"
+                detail=f"Erro ao buscar análises do usuário: {analyses['error']}"
             )
         
-        # Filtra apenas análises on-chain
-        onchain_analyses = [
-            analysis for analysis in result.data
-            if analysis["analysis_type"] == "onchain"
-        ]
+        # Se a lista estiver vazia, retorna uma lista vazia
+        if not analyses:
+            return []
         
+        # Formatar resposta
         return [
-            OnchainAnalysisResponse(
-                analysis_id=analysis["id"],
-                address=analysis["address"],
-                chain=analysis["chain"],
-                holder_distribution=analysis["holder_distribution"],
-                transaction_metrics=analysis["transaction_metrics"],
-                liquidity_analysis=analysis["liquidity_analysis"],
-                risk_assessment=analysis["risk_assessment"],
-                timestamp=analysis["timestamp"]
+            OnchainResponse(
+                analysis_id=analysis.get("id"),
+                token_address=analysis.get("token_address"),
+                **analysis.get("result", {})
             )
-            for analysis in onchain_analyses
+            for analysis in analyses
         ]
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500,

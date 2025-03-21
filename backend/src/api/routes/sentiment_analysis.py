@@ -8,8 +8,10 @@ from loguru import logger
 from ...core.agent_manager import agent_manager
 from ...agents.sentiment_agent import SentimentAgent
 from ...integrations.supabase import supabase
+from ...db.database import Database
 
 router = APIRouter()
+db = Database()
 
 class SentimentAnalysisRequest(BaseModel):
     symbol: str
@@ -50,130 +52,64 @@ async def analyze_token_sentiment(request: SentimentAnalysisRequest):
         
         if "error" in agent_result:
             logger.error(f"Erro na análise de sentimento: {agent_result['error']}")
-            # Gerar resultado mock em caso de erro
-            agent_result = _generate_mock_sentiment_result(request.symbol)
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Erro ao realizar análise de sentimento: {agent_result['error']}"
+            )
         
         # Prepara dados para salvar no banco
         analysis_data = {
             "user_id": request.user_id,
             "symbol": request.symbol,
             "analysis_type": "sentiment",
-            "overall_sentiment": agent_result.get("overall_sentiment", {"sentiment": "neutral", "score": 50}),
-            "sentiment_by_source": agent_result.get("sentiment_by_source", {}),
-            "engagement_metrics": agent_result.get("engagement_metrics", {"total_mentions": 0}),
-            "discussion_trends": agent_result.get("discussion_trends", []),
+            "result": {
+                "overall_sentiment": agent_result.get("overall_sentiment", {"sentiment": "neutral", "score": 50}),
+                "sentiment_by_source": agent_result.get("sentiment_by_source", {}),
+                "engagement_metrics": agent_result.get("engagement_metrics", {"total_mentions": 0}),
+                "discussion_trends": agent_result.get("discussion_trends", []),
+            },
+            "created_at": datetime.now().isoformat(),
             "timestamp": agent_result.get("timestamp", datetime.now().isoformat())
         }
         
         # Tenta salvar análise no banco - permite continuar mesmo se falhar
         try:
-            result = supabase.save_analysis(analysis_data)
-            if result.error:
-                logger.error(f"Erro ao salvar análise no Supabase: {result.error}")
+            result = await db.save_analysis(analysis_data)
+            if "error" in result:
+                logger.error(f"Erro ao salvar análise no banco: {result['error']}")
                 analysis_id = f"temp_{request.symbol}_{int(datetime.now().timestamp())}"
             else:
-                analysis_id = result.data[0]["id"]
+                analysis_id = result.get("id", f"temp_{request.symbol}_{int(datetime.now().timestamp())}")
         except Exception as e:
-            logger.error(f"Erro ao acessar Supabase: {str(e)}")
+            logger.error(f"Erro ao acessar banco de dados: {str(e)}")
             analysis_id = f"temp_{request.symbol}_{int(datetime.now().timestamp())}"
+        
+        # Extrai os dados para a resposta
+        overall_sentiment = analysis_data["result"]["overall_sentiment"]
+        sentiment_by_source = analysis_data["result"]["sentiment_by_source"]
+        engagement_metrics = analysis_data["result"]["engagement_metrics"]
+        discussion_trends = analysis_data["result"]["discussion_trends"]
         
         # Retorna resposta formatada
         return SentimentAnalysisResponse(
             analysis_id=analysis_id,
             symbol=request.symbol,
-            overall_sentiment=analysis_data["overall_sentiment"],
-            sentiment_by_source=analysis_data["sentiment_by_source"],
-            engagement_metrics=analysis_data["engagement_metrics"],
-            discussion_trends=analysis_data["discussion_trends"],
+            overall_sentiment=overall_sentiment,
+            sentiment_by_source=sentiment_by_source,
+            engagement_metrics=engagement_metrics,
+            discussion_trends=discussion_trends,
             timestamp=analysis_data["timestamp"]
         )
         
+    except HTTPException as he:
+        # Propagar exceções HTTP
+        raise he
     except Exception as e:
         logger.error(f"Erro ao realizar análise de sentimento: {str(e)}")
-        # Gerar mock em caso de erro geral
-        mock_result = _generate_mock_sentiment_result(request.symbol)
-        
-        return SentimentAnalysisResponse(
-            analysis_id=f"error_{request.symbol}_{int(datetime.now().timestamp())}",
-            symbol=request.symbol,
-            overall_sentiment=mock_result["overall_sentiment"],
-            sentiment_by_source=mock_result["sentiment_by_source"],
-            engagement_metrics=mock_result["engagement_metrics"],
-            discussion_trends=mock_result["discussion_trends"],
-            timestamp=datetime.now().isoformat()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao realizar análise de sentimento: {str(e)}"
         )
-
-def _generate_mock_sentiment_result(symbol: str) -> Dict[str, Any]:
-    """
-    Gera um resultado de análise de sentimento simulado em caso de falha.
-    
-    Args:
-        symbol: Símbolo do token.
-        
-    Returns:
-        Dicionário com resultado simulado.
-    """
-    # Define o sentimento com base no símbolo
-    if symbol.upper() in ["BTC", "ETH"]:
-        sentiment = "positive"
-        score = random.randint(70, 85)
-    else:
-        sentiments = ["slightly_negative", "neutral", "slightly_positive"]
-        sentiment = random.choice(sentiments)
-        score = 40 if sentiment == "slightly_negative" else 50 if sentiment == "neutral" else 60
-    
-    mock_sources = {
-        "telegram": {
-            "score": score,
-            "sentiment": sentiment,
-            "confidence": 0.8,
-            "is_simulated": True
-        },
-        "general_discussion": {
-            "score": score - random.randint(-5, 5),
-            "sentiment": sentiment,
-            "confidence": 0.75,
-            "is_simulated": True
-        }
-    }
-    
-    mock_trends = [
-        {
-            "theme": f"Análise técnica do {symbol} mostra padrões interessantes",
-            "relevance": "alta",
-            "sentiment": sentiment,
-            "is_simulated": True
-        },
-        {
-            "theme": f"Discussão sobre o futuro de {symbol} no mercado",
-            "relevance": "média",
-            "sentiment": sentiment,
-            "is_simulated": True
-        }
-    ]
-    
-    return {
-        "overall_sentiment": {
-            "score": score,
-            "sentiment": sentiment,
-            "confidence": 0.8,
-            "sources_count": 2,
-            "is_simulated": True
-        },
-        "sentiment_by_source": mock_sources,
-        "engagement_metrics": {
-            "total_mentions": random.randint(5, 20),
-            "mentions_by_source": {
-                "telegram": random.randint(2, 10),
-                "general_discussion": random.randint(3, 10)
-            },
-            "activity_level": "médio",
-            "trend": "estável",
-            "is_simulated": True
-        },
-        "discussion_trends": mock_trends,
-        "timestamp": datetime.now().isoformat()
-    }
 
 @router.get("/{analysis_id}", response_model=SentimentAnalysisResponse)
 async def get_sentiment_analysis(analysis_id: str):
@@ -188,32 +124,39 @@ async def get_sentiment_analysis(analysis_id: str):
     """
     try:
         # Busca análise no banco
-        result = supabase.client.table("token_analyses").select("*").eq("id", analysis_id).execute()
+        analysis = await db.get_analysis(analysis_id)
         
-        if not result.data:
+        if "error" in analysis:
             raise HTTPException(
                 status_code=404,
                 detail="Análise não encontrada"
             )
         
-        analysis = result.data[0]
-        
-        if analysis["analysis_type"] != "sentiment":
+        if analysis.get("analysis_type") != "sentiment":
             raise HTTPException(
                 status_code=400,
                 detail="A análise solicitada não é do tipo sentimento"
             )
         
+        # Extrai os dados do resultado
+        result = analysis.get("result", {})
+        overall_sentiment = result.get("overall_sentiment", {})
+        sentiment_by_source = result.get("sentiment_by_source", {})
+        engagement_metrics = result.get("engagement_metrics", {})
+        discussion_trends = result.get("discussion_trends", [])
+        
         return SentimentAnalysisResponse(
-            analysis_id=analysis["id"],
-            symbol=analysis["symbol"],
-            overall_sentiment=analysis["overall_sentiment"],
-            sentiment_by_source=analysis["sentiment_by_source"],
-            engagement_metrics=analysis["engagement_metrics"],
-            discussion_trends=analysis["discussion_trends"],
-            timestamp=analysis["timestamp"]
+            analysis_id=analysis.get("id"),
+            symbol=analysis.get("symbol"),
+            overall_sentiment=overall_sentiment,
+            sentiment_by_source=sentiment_by_source,
+            engagement_metrics=engagement_metrics,
+            discussion_trends=discussion_trends,
+            timestamp=analysis.get("timestamp", analysis.get("created_at"))
         )
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -221,45 +164,46 @@ async def get_sentiment_analysis(analysis_id: str):
         )
 
 @router.get("/user/{user_id}", response_model=List[SentimentAnalysisResponse])
-async def get_user_sentiment_analyses(user_id: str):
+async def get_user_sentiment_analyses(user_id: str, limit: int = 10):
     """
-    Obtém todas as análises de sentimento de um usuário.
+    Obtém análises de sentimento de um usuário.
     
     Args:
         user_id: ID do usuário
+        limit: Número máximo de análises a retornar
         
     Returns:
         List[SentimentAnalysisResponse]: Lista de análises de sentimento
     """
     try:
         # Busca análises do usuário no banco
-        result = supabase.get_user_analyses(user_id)
+        analyses = await db.get_user_analyses(user_id, analysis_type="sentiment", limit=limit)
         
-        if result.error:
+        if isinstance(analyses, dict) and "error" in analyses:
             raise HTTPException(
                 status_code=500,
-                detail="Erro ao buscar análises do usuário"
+                detail=f"Erro ao buscar análises do usuário: {analyses['error']}"
             )
         
-        # Filtra apenas análises de sentimento
-        sentiment_analyses = [
-            analysis for analysis in result.data
-            if analysis["analysis_type"] == "sentiment"
-        ]
+        # Se a lista estiver vazia, retorna uma lista vazia
+        if not analyses:
+            return []
         
         return [
             SentimentAnalysisResponse(
-                analysis_id=analysis["id"],
-                symbol=analysis["symbol"],
-                overall_sentiment=analysis["overall_sentiment"],
-                sentiment_by_source=analysis["sentiment_by_source"],
-                engagement_metrics=analysis["engagement_metrics"],
-                discussion_trends=analysis["discussion_trends"],
-                timestamp=analysis["timestamp"]
+                analysis_id=analysis.get("id"),
+                symbol=analysis.get("symbol"),
+                overall_sentiment=analysis.get("result", {}).get("overall_sentiment", {}),
+                sentiment_by_source=analysis.get("result", {}).get("sentiment_by_source", {}),
+                engagement_metrics=analysis.get("result", {}).get("engagement_metrics", {}),
+                discussion_trends=analysis.get("result", {}).get("discussion_trends", []),
+                timestamp=analysis.get("timestamp", analysis.get("created_at"))
             )
-            for analysis in sentiment_analyses
+            for analysis in analyses
         ]
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500,

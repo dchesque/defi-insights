@@ -8,17 +8,80 @@ import json
 from bs4 import BeautifulSoup
 from typing import Dict, List, Any, Optional
 from loguru import logger
+from datetime import datetime, timedelta
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import asyncio
 
 class BlockchainExplorerClient:
     """
-    Cliente para obter dados básicos on-chain de exploradores de blockchain.
+    Cliente para obter dados on-chain de exploradores de blockchain.
     Usa web scraping para obter dados sem necessidade de API key.
     """
     
     def __init__(self):
         """Inicializa o cliente de explorador de blockchain."""
-        self.base_url = os.getenv("BLOCKCHAIN_EXPLORER_BASE_URL", "https://etherscan.io/address/")
+        self.explorers = {
+            "eth": "https://etherscan.io",
+            "bsc": "https://bscscan.com",
+            "polygon": "https://polygonscan.com",
+            "arbitrum": "https://arbiscan.io",
+            "optimism": "https://optimistic.etherscan.io",
+            "avalanche": "https://snowtrace.io"
+        }
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        self.cache = {}
+        self.cache_ttl = 300  # 5 minutos
+        
+    def _is_valid_address(self, address: str) -> bool:
+        """
+        Verifica se um endereço de blockchain é válido.
+        
+        Args:
+            address: Endereço para verificar
+            
+        Returns:
+            True se o endereço for válido.
+        """
+        # Verificação básica para endereços ETH/EVM (42 caracteres começando com 0x)
+        return bool(address and len(address) == 42 and address.startswith("0x"))
+        
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError))
+    )
+    async def _fetch_page(self, url: str) -> str:
+        """
+        Faz o download de uma página web.
+        
+        Args:
+            url: URL para download
+            
+        Returns:
+            Conteúdo HTML da página
+        """
+        logger.debug(f"Fazendo download de {url}")
+        
+        # Verificar cache
+        if url in self.cache:
+            data, timestamp = self.cache[url]
+            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
+                logger.debug(f"Usando dados em cache para {url}")
+                return data
+                
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                headers = {"User-Agent": self.user_agent}
+                response = await client.get(url, headers=headers, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Salvar no cache
+                self.cache[url] = (response.text, datetime.now())
+                
+                return response.text
+        except Exception as e:
+            logger.error(f"Erro ao fazer download de {url}: {str(e)}")
+            raise
         
     async def get_address_info(self, address: str, chain: str = "eth") -> Dict[str, Any]:
         """
@@ -35,9 +98,123 @@ class BlockchainExplorerClient:
             logger.error(f"Endereço inválido: {address}")
             return {"error": "Endereço inválido"}
             
-        # Na implementação real, faríamos scraping das informações
-        # Aqui, vamos retornar dados simulados para demonstração
-        return self._get_mock_address_info(address, chain)
+        # Obter base URL do explorer para a chain
+        explorer_url = self.explorers.get(chain.lower())
+        if not explorer_url:
+            logger.error(f"Chain não suportada: {chain}")
+            return {"error": f"Chain não suportada: {chain}"}
+            
+        # Construir URL para o endereço
+        address_url = f"{explorer_url}/address/{address}"
+        
+        try:
+            # Fazer download da página
+            html_content = await self._fetch_page(address_url)
+            
+            # Extrair informações
+            return await self._parse_address_info(html_content, address, chain)
+        except Exception as e:
+            logger.error(f"Erro ao obter informações do endereço {address}: {str(e)}")
+            return {"error": f"Falha ao obter dados: {str(e)}"}
+        
+    async def _parse_address_info(self, html_content: str, address: str, chain: str) -> Dict[str, Any]:
+        """
+        Extrai informações do endereço a partir do HTML.
+        
+        Args:
+            html_content: HTML da página do endereço
+            address: Endereço consultado
+            chain: Cadeia de blocos
+            
+        Returns:
+            Informações extraídas do endereço
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            result = {
+                "address": address,
+                "chain": chain,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Extrair saldo em ETH/moeda nativa
+            balance_element = soup.select_one("div.card-body span.u-label")
+            if balance_element:
+                balance_text = balance_element.get_text(strip=True)
+                # Extrair valor numérico usando regex
+                balance_match = re.search(r'(\d+\.?\d*)', balance_text)
+                result["balance"] = float(balance_match.group(1)) if balance_match else 0
+                result["currency"] = "ETH" if chain == "eth" else chain.upper()
+            
+            # Verificar se é um contrato
+            is_contract = "Contract" in html_content or "Contract Address" in html_content
+            result["is_contract"] = is_contract
+            
+            if is_contract:
+                # Tentar encontrar nome do contrato/token
+                token_name_element = soup.select_one("span.h4")
+                if token_name_element:
+                    result["token_name"] = token_name_element.get_text(strip=True)
+                
+                # Extrair dados do token se for um contrato ERC-20
+                result["token_data"] = await self._extract_token_data(soup)
+            
+            # Extrair última atividade
+            txs_element = soup.select_one("a[href*='txs']")
+            if txs_element:
+                txs_text = txs_element.get_text(strip=True)
+                txs_match = re.search(r'(\d+)', txs_text)
+                result["transaction_count"] = int(txs_match.group(1)) if txs_match else 0
+            
+            return result
+        except Exception as e:
+            logger.error(f"Erro ao analisar informações do endereço: {str(e)}")
+            return {
+                "address": address,
+                "chain": chain,
+                "error": f"Erro ao analisar página: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def _extract_token_data(self, soup: BeautifulSoup) -> Dict[str, Any]:
+        """
+        Extrai dados de um token a partir da sopa HTML.
+        
+        Args:
+            soup: BeautifulSoup da página do token
+            
+        Returns:
+            Dados do token extraídos
+        """
+        token_data = {}
+        
+        # Extrair informações básicas do token
+        try:
+            # Encontrar símbolos
+            symbol_element = soup.select_one("span.text-secondary")
+            if symbol_element:
+                token_data["symbol"] = symbol_element.get_text(strip=True)
+            
+            # Encontrar decimais
+            decimals_element = soup.find(string=re.compile("Decimals"))
+            if decimals_element and decimals_element.parent:
+                decimals_text = decimals_element.parent.get_text(strip=True)
+                decimals_match = re.search(r'Decimals:\s*(\d+)', decimals_text)
+                token_data["decimals"] = int(decimals_match.group(1)) if decimals_match else 18
+            
+            # Encontrar supply
+            total_supply_element = soup.find(string=re.compile("Total Supply"))
+            if total_supply_element and total_supply_element.parent:
+                supply_text = total_supply_element.parent.get_text(strip=True)
+                supply_match = re.search(r'([\d,\.]+)', supply_text)
+                if supply_match:
+                    # Remover vírgulas e converter para float
+                    supply = supply_match.group(1).replace(',', '')
+                    token_data["total_supply"] = float(supply)
+        except Exception as e:
+            logger.warning(f"Erro ao extrair dados do token: {str(e)}")
+            
+        return token_data
         
     async def get_token_holders(self, token_address: str, chain: str = "eth") -> List[Dict[str, Any]]:
         """
@@ -54,13 +231,85 @@ class BlockchainExplorerClient:
             logger.error(f"Endereço de token inválido: {token_address}")
             return [{"error": "Endereço de token inválido"}]
             
-        # Na implementação real, faríamos scraping das informações
-        # Aqui, vamos retornar dados simulados para demonstração
-        return self._get_mock_token_holders(token_address, chain)
+        # Obter base URL do explorer para a chain
+        explorer_url = self.explorers.get(chain.lower())
+        if not explorer_url:
+            logger.error(f"Chain não suportada: {chain}")
+            return [{"error": f"Chain não suportada: {chain}"}]
+            
+        # Construir URL para os detentores do token
+        holders_url = f"{explorer_url}/token/{token_address}#balances"
         
+        try:
+            # Fazer download da página
+            html_content = await self._fetch_page(holders_url)
+            
+            # Extrair informações dos detentores
+            return await self._parse_token_holders(html_content, token_address, chain)
+        except Exception as e:
+            logger.error(f"Erro ao obter detentores do token {token_address}: {str(e)}")
+            return [{"error": f"Falha ao obter dados: {str(e)}"}]
+    
+    async def _parse_token_holders(self, html_content: str, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """
+        Extrai informações sobre os detentores de tokens a partir do HTML.
+        
+        Args:
+            html_content: HTML da página de detentores
+            token_address: Endereço do token
+            chain: Cadeia de blocos
+            
+        Returns:
+            Lista de detentores de tokens
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            holders = []
+            
+            # Encontrar tabela de detentores
+            table = soup.select_one("table.table")
+            if not table:
+                return []
+                
+            rows = table.select("tbody tr")
+            for row in rows:
+                try:
+                    columns = row.select("td")
+                    if len(columns) >= 3:
+                        rank_text = columns[0].get_text(strip=True)
+                        address_element = columns[1].select_one("a")
+                        address = address_element.get("href").split("/")[-1] if address_element else "Unknown"
+                        address_text = address_element.get_text(strip=True) if address_element else "Unknown"
+                        quantity_text = columns[2].get_text(strip=True)
+                        percentage_text = columns[3].get_text(strip=True) if len(columns) > 3 else "0%"
+                        
+                        # Extrair valores numéricos
+                        rank = int(rank_text) if rank_text.isdigit() else 0
+                        quantity_match = re.search(r'([\d,\.]+)', quantity_text)
+                        quantity = float(quantity_match.group(1).replace(',', '')) if quantity_match else 0
+                        percentage_match = re.search(r'([\d\.]+)', percentage_text)
+                        percentage = float(percentage_match.group(1)) if percentage_match else 0
+                        
+                        holder = {
+                            "rank": rank,
+                            "address": address,
+                            "address_label": address_text if address_text != address else None,
+                            "quantity": quantity,
+                            "percentage": percentage
+                        }
+                        holders.append(holder)
+                except Exception as e:
+                    logger.warning(f"Erro ao processar detentor de token: {str(e)}")
+                    continue
+                    
+            return holders
+        except Exception as e:
+            logger.error(f"Erro ao analisar detentores do token: {str(e)}")
+            return []
+            
     async def get_token_transactions(self, token_address: str, limit: int = 10, chain: str = "eth") -> List[Dict[str, Any]]:
         """
-        Obtém as transações recentes de um token.
+        Obtém transações recentes de um token.
         
         Args:
             token_address: Endereço do contrato do token
@@ -68,252 +317,136 @@ class BlockchainExplorerClient:
             chain: Cadeia de blocos (eth, bsc, polygon, etc.)
             
         Returns:
-            Lista de transações recentes.
+            Lista de transações recentes
         """
         if not self._is_valid_address(token_address):
             logger.error(f"Endereço de token inválido: {token_address}")
             return [{"error": "Endereço de token inválido"}]
             
-        # Na implementação real, faríamos scraping das informações
-        # Aqui, vamos retornar dados simulados para demonstração
-        return self._get_mock_token_transactions(token_address, limit, chain)
+        # Obter base URL do explorer para a chain
+        explorer_url = self.explorers.get(chain.lower())
+        if not explorer_url:
+            logger.error(f"Chain não suportada: {chain}")
+            return [{"error": f"Chain não suportada: {chain}"}]
+            
+        # Construir URL para as transações do token
+        transactions_url = f"{explorer_url}/token/{token_address}#transactions"
         
+        try:
+            # Fazer download da página
+            html_content = await self._fetch_page(transactions_url)
+            
+            # Extrair informações das transações
+            transactions = await self._parse_token_transactions(html_content, token_address, chain)
+            return transactions[:limit]
+        except Exception as e:
+            logger.error(f"Erro ao obter transações do token {token_address}: {str(e)}")
+            return [{"error": f"Falha ao obter dados: {str(e)}"}]
+            
+    async def _parse_token_transactions(self, html_content: str, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """
+        Extrai informações sobre transações de tokens a partir do HTML.
+        
+        Args:
+            html_content: HTML da página de transações
+            token_address: Endereço do token
+            chain: Cadeia de blocos
+            
+        Returns:
+            Lista de transações de tokens
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            transactions = []
+            
+            # Encontrar tabela de transações
+            table = soup.select_one("table.table")
+            if not table:
+                return []
+                
+            rows = table.select("tbody tr")
+            for row in rows:
+                try:
+                    columns = row.select("td")
+                    if len(columns) >= 6:
+                        tx_hash_element = columns[0].select_one("a")
+                        tx_hash = tx_hash_element.get("href").split("/")[-1] if tx_hash_element else "Unknown"
+                        
+                        method_element = columns[1].select_one("span")
+                        method = method_element.get_text(strip=True) if method_element else "Transfer"
+                        
+                        timestamp_element = columns[2].select_one("span[title]")
+                        timestamp = timestamp_element.get("title", "") if timestamp_element else ""
+                        
+                        from_element = columns[3].select_one("a")
+                        from_address = from_element.get("href").split("/")[-1] if from_element else "Unknown"
+                        
+                        to_element = columns[5].select_one("a")
+                        to_address = to_element.get("href").split("/")[-1] if to_element else "Unknown"
+                        
+                        quantity_element = columns[6] if len(columns) > 6 else None
+                        quantity_text = quantity_element.get_text(strip=True) if quantity_element else "0"
+                        quantity_match = re.search(r'([\d,\.]+)', quantity_text)
+                        quantity = float(quantity_match.group(1).replace(',', '')) if quantity_match else 0
+                        
+                        transaction = {
+                            "tx_hash": tx_hash,
+                            "method": method,
+                            "timestamp": timestamp,
+                            "from": from_address,
+                            "to": to_address,
+                            "quantity": quantity,
+                            "token_address": token_address
+                        }
+                        transactions.append(transaction)
+                except Exception as e:
+                    logger.warning(f"Erro ao processar transação de token: {str(e)}")
+                    continue
+                    
+            return transactions
+        except Exception as e:
+            logger.error(f"Erro ao analisar transações do token: {str(e)}")
+            return []
+            
     async def get_token_contract_info(self, token_address: str, chain: str = "eth") -> Dict[str, Any]:
         """
-        Obtém informações sobre o contrato de um token.
+        Obtém informações do contrato de um token.
         
         Args:
             token_address: Endereço do contrato do token
             chain: Cadeia de blocos (eth, bsc, polygon, etc.)
             
         Returns:
-            Dados do contrato.
+            Informações do contrato
         """
-        if not self._is_valid_address(token_address):
-            logger.error(f"Endereço de token inválido: {token_address}")
-            return {"error": "Endereço de token inválido"}
-            
-        # Na implementação real, faríamos scraping das informações
-        # Aqui, vamos retornar dados simulados para demonstração
-        return self._get_mock_contract_info(token_address, chain)
+        # Apenas uma wrapper para o método get_address_info, já que contém as mesmas informações
+        return await self.get_address_info(token_address, chain)
         
-    def _is_valid_address(self, address: str) -> bool:
+    async def check_connection(self) -> bool:
         """
-        Verifica se um endereço de blockchain é válido.
+        Verifica se a conexão com o explorador de blockchain está funcionando.
         
-        Args:
-            address: Endereço a ser verificado
-            
         Returns:
-            True se o endereço for válido, False caso contrário.
+            True se a conexão estiver funcionando, False caso contrário.
         """
-        # Formato básico de um endereço Ethereum: 0x seguido por 40 caracteres hexadecimais
-        pattern = r'^0x[a-fA-F0-9]{40}$'
-        return bool(re.match(pattern, address))
-        
-    def _get_mock_address_info(self, address: str, chain: str) -> Dict[str, Any]:
-        """
-        Gera dados simulados de informações de endereço.
-        
-        Args:
-            address: Endereço da carteira ou contrato
-            chain: Cadeia de blocos
+        try:
+            # Tenta acessar a página inicial do Etherscan
+            explorer_url = self.explorers.get("eth", "https://etherscan.io")
+            await self._fetch_page(explorer_url)
+            logger.info("Conexão com o explorador de blockchain está funcionando")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao verificar conexão com o explorador de blockchain: {str(e)}")
+            return False
             
+    def _get_current_timestamp(self) -> str:
+        """
+        Retorna o timestamp atual formatado como string ISO.
+        
         Returns:
-            Dados simulados do endereço.
+            Timestamp ISO formatado
         """
-        # Algumas informações serão determinísticas com base no endereço para consistência
-        address_hash = sum(ord(c) for c in address)
-        
-        # Determinando se é um contrato ou uma carteira com base no último caractere
-        is_contract = int(address[-1], 16) % 2 == 0
-        
-        if is_contract:
-            contract_type = ["ERC20 Token", "ERC721 NFT", "DEX", "Lending", "Staking"][address_hash % 5]
-            verified = address_hash % 10 >= 7  # 30% chance de não ser verificado
-            
-            return {
-                "address": address,
-                "chain": chain,
-                "type": "Contract",
-                "contract_type": contract_type,
-                "verified": verified,
-                "balance": round(address_hash % 1000 * 0.01, 2),
-                "token_name": f"Token_{address[2:8]}",
-                "token_symbol": address[2:5].upper(),
-                "transactions": address_hash % 10000 + 100,
-                "created_at": "2022-10-15T14:30:00Z",
-                "creator": f"0x{address_hash % 16**40:040x}"[:42],
-                "last_activity": "2023-06-01T09:15:00Z"
-            }
-        else:
-            # Carteira comum
-            return {
-                "address": address,
-                "chain": chain,
-                "type": "EOA",  # Externally Owned Account
-                "balance": round(address_hash % 1000 * 0.01, 2),
-                "transactions": address_hash % 1000 + 10,
-                "first_activity": "2021-05-10T08:45:00Z",
-                "last_activity": "2023-06-05T16:20:00Z",
-                "token_count": address_hash % 50 + 2,
-                "nft_count": address_hash % 20
-            }
-    
-    def _get_mock_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
-        """
-        Gera dados simulados de detentores de tokens.
-        
-        Args:
-            token_address: Endereço do contrato do token
-            chain: Cadeia de blocos
-            
-        Returns:
-            Lista simulada de detentores do token.
-        """
-        address_hash = sum(ord(c) for c in token_address)
-        total_supply = address_hash % 1000000000 + 10000000
-        
-        holders = []
-        
-        # Gerar detentores principais (whales)
-        for i in range(10):
-            percent = 50 / (i + 1) ** 1.5  # Distribuição decrescente
-            if i == 0 and percent > 30:
-                percent = 30  # Limitar o maior detentor a 30%
-                
-            holder_address = f"0x{(address_hash + i) % 16**40:040x}"[:42]
-            
-            # Marcar alguns endereços como exchanges ou contratos
-            holder_type = "Unknown"
-            if i == 0:
-                holder_type = "Contract (DEX LP)"
-            elif i == 1:
-                holder_type = "Exchange"
-            elif i % 3 == 0:
-                holder_type = "Whale"
-                
-            holders.append({
-                "rank": i + 1,
-                "address": holder_address,
-                "quantity": int(total_supply * percent / 100),
-                "percentage": round(percent, 2),
-                "type": holder_type,
-                "first_acquisition": f"2022-{(i + 1):02d}-15T10:30:00Z"
-            })
-            
-        return holders
-        
-    def _get_mock_token_transactions(self, token_address: str, limit: int, chain: str) -> List[Dict[str, Any]]:
-        """
-        Gera dados simulados de transações de tokens.
-        
-        Args:
-            token_address: Endereço do contrato do token
-            limit: Número máximo de transações a retornar
-            chain: Cadeia de blocos
-            
-        Returns:
-            Lista simulada de transações do token.
-        """
-        address_hash = sum(ord(c) for c in token_address)
-        transactions = []
-        
-        for i in range(limit):
-            # Determinar se é compra ou venda
-            is_buy = (address_hash + i) % 3 != 0  # 2/3 de chance de ser compra
-            
-            # Determinar o valor
-            value = address_hash % 10000 / (i + 1) + 100
-            
-            # Gerar endereços
-            from_address = f"0x{(address_hash + i*3) % 16**40:040x}"[:42]
-            to_address = f"0x{(address_hash + i*7) % 16**40:040x}"[:42]
-            
-            # Tornar algumas transações de exchange
-            is_exchange = (i % 5 == 0)
-            if is_exchange:
-                if is_buy:
-                    from_address = "0xdAC17F958D2ee523a2206206994597C13D831ec7"  # USDT
-                    from_label = "USDT Treasury"
-                else:
-                    to_address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"  # Uniswap
-                    to_label = "Uniswap V2"
-            else:
-                from_label = ""
-                to_label = ""
-                
-            # Calcular a hora (transações mais recentes primeiro)
-            hours_ago = i * 6  # A cada 6 horas
-            
-            transactions.append({
-                "hash": f"0x{(address_hash + i) % 16**64:064x}",
-                "block": 17500000 - i,
-                "timestamp": f"2023-06-{15-i//4:02d}T{23-(i%24):02d}:00:00Z",
-                "from": from_address,
-                "from_label": from_label,
-                "to": to_address,
-                "to_label": to_label,
-                "value": round(value, 4),
-                "transaction_type": "Buy" if is_buy else "Sell",
-                "gas_price": 20 + (i % 10),
-                "status": "Success"
-            })
-            
-        return transactions
-        
-    def _get_mock_contract_info(self, token_address: str, chain: str) -> Dict[str, Any]:
-        """
-        Gera dados simulados de informações de contrato.
-        
-        Args:
-            token_address: Endereço do contrato do token
-            chain: Cadeia de blocos
-            
-        Returns:
-            Dados simulados do contrato.
-        """
-        address_hash = sum(ord(c) for c in token_address)
-        
-        # Determinar o tipo de token
-        token_types = ["ERC20", "ERC721", "ERC1155"]
-        token_type = token_types[address_hash % len(token_types)]
-        
-        # Determinar se o contrato é verificado
-        is_verified = address_hash % 10 >= 3  # 70% chance de ser verificado
-        
-        # Calcular o total supply
-        total_supply = address_hash % 1000000000 + 10000000
-        
-        # Gerar dados do contrato
-        contract_info = {
-            "address": token_address,
-            "chain": chain,
-            "token_type": token_type,
-            "name": f"Token_{token_address[2:8]}",
-            "symbol": token_address[2:5].upper(),
-            "decimals": 18,
-            "total_supply": total_supply,
-            "verified": is_verified,
-            "owner": f"0x{(address_hash * 2) % 16**40:040x}"[:42],
-            "implementation": None,  # Para proxies
-            "creation_date": "2022-10-15T14:30:00Z",
-            "creation_tx": f"0x{(address_hash * 3) % 16**64:064x}"
-        }
-        
-        # Adicionar informações específicas para contratos verificados
-        if is_verified:
-            contract_info.update({
-                "compiler": f"Solidity 0.8.{address_hash % 10}",
-                "license": "MIT",
-                "has_proxy": address_hash % 5 == 0,
-                "audited": address_hash % 3 == 0
-            })
-            
-            if contract_info["has_proxy"]:
-                contract_info["implementation"] = f"0x{(address_hash * 5) % 16**40:040x}"[:42]
-                
-        return contract_info
+        return datetime.now().isoformat()
 
 # Instância global do cliente
-blockchain_explorer_client = BlockchainExplorerClient() 
+blockchain_explorer = BlockchainExplorerClient() 

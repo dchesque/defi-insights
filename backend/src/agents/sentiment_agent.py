@@ -120,57 +120,31 @@ class SentimentAgent(BaseAgent):
         """
         logger.info(f"Coletando dados sociais para {symbol}")
         
-        # Coletar dados apenas do Telegram
+        # Coletar dados do Telegram
         telegram_messages = await self.telegram_client.get_channel_messages("crypto_discussions")
+        telegram_discussions = await self.telegram_client.get_recent_discussions(symbol)
         
         # Extrair textos para análise
-        telegram_texts = [msg.get("text", "") for msg in telegram_messages if symbol.lower() in msg.get("text", "").lower()]
+        telegram_channel_texts = [msg.get("text", "") for msg in telegram_messages if symbol.lower() in msg.get("text", "").lower()]
+        telegram_discussion_texts = [msg.get("text", "") for msg in telegram_discussions]
         
-        # Gerar dados simulados para análise
-        simulated_texts = self._get_simulated_data(symbol)
+        # Combinar textos do Telegram
+        telegram_texts = telegram_channel_texts + telegram_discussion_texts
+        
+        # Buscar dados de notícias de criptomoedas via CoinGecko
+        try:
+            from ..integrations.coingecko import coingecko_client
+            news_data = await coingecko_client.get_coin_news(symbol.lower())
+            news_texts = [f"{item.get('title', '')}: {item.get('description', '')}" for item in news_data if item.get('title')]
+        except Exception as e:
+            logger.warning(f"Erro ao obter notícias do CoinGecko: {str(e)}")
+            news_texts = []
         
         return {
             "telegram": telegram_texts,
-            "general_discussion": simulated_texts
+            "news": news_texts
         }
     
-    def _get_simulated_data(self, symbol: str) -> List[str]:
-        """
-        Gera textos simulados para análise de sentimento quando as integrações reais não estão disponíveis.
-        
-        Args:
-            symbol: Símbolo do token.
-            
-        Returns:
-            Lista de textos simulados.
-        """
-        # Texto comum para qualquer token
-        common_texts = [
-            f"Estou muito otimista sobre {symbol} para o longo prazo. Os fundamentos são sólidos e a equipe continua trabalhando bem.",
-            f"Análise técnica de {symbol} mostra possível resistência nos níveis atuais. Traders devem ter cautela.",
-            f"A comunidade de {symbol} continua crescendo e os desenvolvedores estão entregando conforme o roadmap.",
-            f"Há algumas preocupações sobre a centralização de {symbol} que precisam ser abordadas.",
-            f"Comparando {symbol} com projetos similares, acredito que ainda tem muito espaço para crescimento."
-        ]
-        
-        # Para tokens populares, adicionar textos mais específicos
-        if symbol.upper() == "BTC":
-            extra_texts = [
-                "Bitcoin continua sendo a melhor reserva de valor digital. Com o halving se aproximando, podemos esperar alta nos próximos meses.",
-                "Os ETFs de Bitcoin mostram adoção institucional contínua. Isso é apenas o começo.",
-                "Preocupado com a centralização da mineração de Bitcoin. Precisamos de mais diversificação geográfica."
-            ]
-            return common_texts + extra_texts
-        elif symbol.upper() == "ETH":
-            extra_texts = [
-                "Ethereum continua liderando em desenvolvimento de DApps e DeFi. O ecossistema está crescendo rapidamente.",
-                "As atualizações recentes do Ethereum melhoraram muito a eficiência da rede. Taxas mais baixas beneficiam todos os usuários.",
-                "As soluções L2 para Ethereum estão revolucionando a escalabilidade e reduzindo custos significativamente."
-            ]
-            return common_texts + extra_texts
-        else:
-            return common_texts
-            
     async def _analyze_sentiment(self, symbol: str, social_data: Dict[str, List[str]]) -> Dict[str, Any]:
         """
         Analisa o sentimento dos dados sociais coletados.
@@ -200,16 +174,9 @@ class SentimentAgent(BaseAgent):
                 # Concatenar todos os posts para análise
                 text_to_analyze = "\n".join(posts[:10])  # Limitar a 10 posts para economia
                 
-                # Usar o Claude para análise de sentimento ou dados simulados em caso de falha
+                # Usar o Claude para análise de sentimento
                 logger.info(f"Analisando sentimento de dados do {source} para {symbol}")
-                try:
-                    sentiment_result = await anthropic_client.analyze_sentiment(text_to_analyze)
-                    if not sentiment_result or "error" in sentiment_result:
-                        raise Exception("Falha na análise do Claude")
-                except Exception as e:
-                    logger.warning(f"Usando dados simulados para análise de sentimento de {source}: {str(e)}")
-                    # Dados simulados em caso de falha na API
-                    sentiment_result = self._generate_simulated_sentiment(source, symbol)
+                sentiment_result = await anthropic_client.analyze_sentiment(text_to_analyze)
                 
                 # Armazenar resultados
                 results[source] = sentiment_result
@@ -220,58 +187,11 @@ class SentimentAgent(BaseAgent):
                     "score": 50,
                     "sentiment": "neutral",
                     "confidence": 0.5,
-                    "is_simulated": True,
                     "error": str(e)
                 }
             
         return results
         
-    def _generate_simulated_sentiment(self, source: str, symbol: str) -> Dict[str, Any]:
-        """
-        Gera dados simulados de sentimento quando a API Claude falha.
-        
-        Args:
-            source: Nome da fonte de dados
-            symbol: Símbolo do token
-            
-        Returns:
-            Dicionário com resultado de sentimento simulado
-        """
-        import random
-        
-        # Sentimentos com base no token para símbolos conhecidos
-        if symbol.upper() == "BTC":
-            score = random.randint(65, 85)  # Geralmente positivo para BTC
-            sentiment = "positive" if score > 75 else "slightly_positive"
-        elif symbol.upper() == "ETH":
-            score = random.randint(60, 80)  # Geralmente positivo para ETH
-            sentiment = "positive" if score > 75 else "slightly_positive"
-        else:
-            # Para outros tokens, randomizar mais
-            score = random.randint(40, 70)
-            if score > 65:
-                sentiment = "slightly_positive"
-            elif score > 55:
-                sentiment = "neutral"
-            else:
-                sentiment = "slightly_negative"
-        
-        keywords = [
-            f"{symbol} price", 
-            "market", 
-            "investors", 
-            "analysis", 
-            "trading"
-        ]
-        
-        return {
-            "score": score,
-            "sentiment": sentiment,
-            "confidence": random.uniform(0.7, 0.9),
-            "keywords": random.sample(keywords, 3),
-            "is_simulated": True
-        }
-            
     def _calculate_engagement_metrics(self, social_data: Dict[str, List[str]]) -> Dict[str, Any]:
         """
         Calcula métricas de engajamento com base nos dados sociais.
@@ -309,7 +229,7 @@ class SentimentAgent(BaseAgent):
                 
             if not all_texts:
                 logger.warning("Sem textos para identificar tendências de discussão")
-                return self._get_default_trends()
+                return []
                 
             all_text = "\n---\n".join(all_texts)
             
@@ -321,7 +241,7 @@ class SentimentAgent(BaseAgent):
                 # Verificar se temos dados válidos
                 if not summary or not isinstance(summary, dict) or "error" in summary:
                     logger.warning(f"Resumo de discussões inválido: {summary}")
-                    return self._get_default_trends()
+                    return []
                 
                 # Extrair tendências do resumo
                 trends = []
@@ -336,46 +256,15 @@ class SentimentAgent(BaseAgent):
                     return trends
                 else:
                     logger.warning("Resumo não contém pontos-chave")
-                    return self._get_default_trends()
+                    return []
                     
             except Exception as e:
                 logger.error(f"Erro ao obter resumo de discussões: {str(e)}")
-                return self._get_default_trends()
+                return []
                 
         except Exception as e:
             logger.error(f"Erro ao identificar tendências de discussão: {str(e)}")
-            return self._get_default_trends()
-            
-    def _get_default_trends(self) -> List[Dict[str, Any]]:
-        """
-        Retorna tendências de discussão padrão quando não é possível obter dados reais.
-        
-        Returns:
-            Lista de tendências padrão
-        """
-        return [
-            {
-                "theme": "Análise de preço e movimento de mercado",
-                "relevance": "alta",
-                "sentiment": "neutral",
-                "keywords": ["preço", "mercado", "tendência"],
-                "is_simulated": True
-            },
-            {
-                "theme": "Desenvolvimentos tecnológicos e atualizações",
-                "relevance": "alta",
-                "sentiment": "slightly_positive",
-                "keywords": ["tecnologia", "atualização", "desenvolvimento"],
-                "is_simulated": True
-            },
-            {
-                "theme": "Adoção institucional e investimentos",
-                "relevance": "média",
-                "sentiment": "positive",
-                "keywords": ["institucional", "investimento", "adoção"],
-                "is_simulated": True
-            }
-        ]
+            return []
             
     def _calculate_overall_sentiment(self, sentiment_results: Dict[str, Any]) -> Dict[str, Any]:
         """
